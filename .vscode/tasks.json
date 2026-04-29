@@ -1,0 +1,36 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Open Mobile Hotspot",
+      "type": "shell",
+      "command": "start ms-settings:network-mobilehotspot"
+    },
+    {
+      "label": "Open WiFi Settings",
+      "type": "shell",
+      "command": "start ms-settings:network-wifi"
+    },
+    {
+      "label": "Start JetBot Workflow",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "Ping JetBot",
+        "Open JetBot JupyterLab"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Ping JetBot",
+      "type": "shell",
+      "command": "python check_jetbot.py",
+      "problemMatcher": []
+    },
+    {
+      "label": "Open JetBot JupyterLab",
+      "type": "shell",
+      "command": "Start-Process \"http://192.168.137.134:8888/lab/workspaces/auto-W\"",
+      "problemMatcher": []
+    }
+  ]
+}
