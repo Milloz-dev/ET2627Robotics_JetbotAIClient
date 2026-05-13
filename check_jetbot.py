@@ -1,7 +1,8 @@
 import subprocess
 import platform
 
-JETBOT_IP = "192.168.137.134"
+JETBOT_IPS = ["192.168.137.134", "192.168.137.95","192.168.137.79"]
+
 
 def ping(ip):
     system = platform.system().lower()
@@ -19,7 +20,15 @@ def ping(ip):
 
     return result.returncode == 0
 
-if ping(JETBOT_IP):
-    print("✅ JetBot connected")
+
+connected_ips = []
+
+for ip in JETBOT_IPS:
+    if ping(ip):
+        connected_ips.append(ip)
+
+# Results
+if connected_ips:
+    print("✅ JetBot(s) connected:", connected_ips)
 else:
-    print("❌ JetBot not connected")
+    print("❌ No JetBot connected")
