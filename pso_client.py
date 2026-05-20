@@ -21,10 +21,7 @@ from typing import Optional, Dict, List
 # CONFIG
 # ─────────────────────────
 ROBOT_IPS = [
-    "194.47.156.201",
-    "194.47.156.39",
-    "194.47.156.43",
-    "194.47.156.213",
+    "194.47.156.201"
 ]
 STREAM_PORT  = 8080
 API_PORT     = 8081
@@ -33,12 +30,12 @@ PSO_INTERVAL = 0.4          # seconds between PSO update cycles
 
 # PSO hyper-parameters
 # PSO hyper-parameters — tuned to reduce spin
-W   = 0.4    # lower inertia so velocity doesn't snowball
+W   = 0.12    # lower inertia so velocity doesn't snowball
 C1  = 1.2
 C2  = 1.2
-MAX_SPEED = 0.30
-MAX_VX = 5.0   # clamp angular velocity
-MAX_VY = 0.5   # clamp linear velocity
+MAX_SPEED = 0.15
+MAX_VX = 0.15   # clamp angular velocity
+MAX_VY = 0.10   # clamp linear velocity  
 
 # Exploration turn: much slower
 SEARCH_TURN_SPEED = 0.1   # was 0.30
@@ -91,10 +88,10 @@ class Particle:
     """
     Represents one JetBot in the PSO swarm.
 
-    Positional state is abstract (direction_deg, distance_m) because we
+    Positional state is abstract (direction_deg, distance_cm) because we
     have no GPS.  We treat:
         x = lateral angle to target  (-30 .. +30 degrees)
-        y = distance to target       (0 .. ~3 m)
+        y = distance to target       (0 .. ~1300 cm)
 
     Velocity maps to motor commands:
         vx → turning  (positive = turn right)
@@ -106,11 +103,11 @@ class Particle:
 
         # "position" in abstract (angle, distance) space
         self.x  = 0.0      # direction_deg   (unknown until first detection)
-        self.y  = 9999.0     # distance_m
+        self.y  = 9999.0     # distance_cm
 
         # velocity in abstract space
-        self.vx = random.uniform(-2, 2)
-        self.vy = random.uniform(-0.1, 0.1)
+        self.vx = random.uniform(-0.3, 0.3)  
+        self.vy = random.uniform(-0.05, 0.05)
 
         # personal best (lowest distance = best)
         self.best_x   = self.x
@@ -119,6 +116,11 @@ class Particle:
 
         self.target_visible = False
         self.last_detection = None
+        # Search sweep state
+        self._sweep_dir      = random.choice([-1, 1])
+        self._sweep_cycles   = 0
+        self._sweep_max      = 12        # cycles per sweep leg (~5 seconds at 0.4s/cycle)
+        self._just_saw       = 0         # grace period counter after losing target
 
     def update_from_detection(self, det):
         if det is None:
@@ -154,31 +156,43 @@ class Particle:
         self.vy = _clamp(self.vy, -MAX_VY, MAX_VY)
 
         if self.target_visible:
-            # ── Direct proportional control toward THIS robot's own sighting ──
-            # Don't rely on PSO velocity — act on raw sensor data immediately
-            angle_deg = self.x          # e.g. -20 = target left, +20 = target right
-            distance  = self.y          # metres
+            print(f"Bot{self.idx} sees target at angle={self.x:.1f}°, dist={self.y:.1f}cm")
+            # ── Direct proportional control ──────────────────────────────────
+            self._just_saw = 6          # hold grace for ~2.4 s after losing sight
+            angle_deg = self.x
+            distance  = self.y
 
-            forward = _clamp(0.2, 0.0, MAX_SPEED)          # constant drive forward
-            turn    = _clamp(angle_deg * 0.015, -0.2, 0.2) # steer toward target
+            if distance < 20.0:
+                return 0.0, 0.0
+            
+            left_speed = 0.15 + (angle_deg * 0.0005)
+            right_speed = 0.15 - (angle_deg * 0.0005)
 
-            # Stop if very close
-            if distance < 250.0:
-                forward = 0.0
-                turn    = 0.0
+            
+        elif self._just_saw > 0:
+            # ── Grace period: keep driving forward a bit, don't spin yet ─────
+            self._just_saw -= 1
+            forward = MAX_SPEED * 0.5
+            # Gently steer toward last known angle
+            turn = _clamp(self.x * 0.012, -0.10, 0.10)
+            left_speed  = _clamp(forward - turn, -MAX_SPEED, MAX_SPEED)
+            right_speed = _clamp(forward + turn, -MAX_SPEED, MAX_SPEED)
 
         elif global_target_visible:
-            # ── Another robot sees it — use PSO to navigate toward global best ──
+            # ── Another robot sees it — PSO-guided navigation ────────────────
             forward = _clamp(-self.vy * 1.5, -MAX_SPEED, MAX_SPEED)
             turn    = _clamp(self.vx * 0.25, -MAX_SPEED, MAX_SPEED)
+            left_speed  = _clamp(forward - turn, -MAX_SPEED, MAX_SPEED)
+            right_speed = _clamp(forward + turn, -MAX_SPEED, MAX_SPEED)
 
         else:
-            # ── No robot sees target — slow search spin ──
-            forward = 0.0
-            turn    = random.choice([-1, 1]) * 0.18
+            # ── Committed sweep search ────────────────────────────────────────
+            left_speed = SEARCH_TURN_SPEED
+            right_speed = 0.0
 
-        left_speed  = _clamp(forward - turn, -MAX_SPEED, MAX_SPEED)
-        right_speed = _clamp(forward + turn, -MAX_SPEED, MAX_SPEED)
+            # left_speed  = _clamp(left_speed,  -MAX_SPEED, MAX_SPEED)
+            # right_speed = _clamp(right_speed, -MAX_SPEED, MAX_SPEED)
+        print(left_speed, right_speed)
         return left_speed, right_speed
 def _clamp(v, lo, hi):
     return max(lo, min(hi, v))
@@ -250,19 +264,8 @@ class SwarmController:
 
         self._send_all(commands)
 
-        # Print summary
-        vis = [i for i, p in enumerate(self.particles) if p.target_visible]
-        print(
-            "[PSO] global_best=({:.1f}°, {:.2f}m)  target_visible={}"
-            .format(self.global_best_x, self.global_best_y,
-                    vis if vis else "none"))
-        for i, (p, (l, r)) in enumerate(zip(self.particles, commands)):
-            print("  Bot{} ip={}  motors=({:.2f},{:.2f})  dist={:.2f}m".format(
-                i, p.ip, l, r, p.best_dist))
-
     def run(self):
         self._running = True
-        print("[PSO] Swarm started with {} robots".format(len(self.particles)))
         try:
             while self._running:
                 t0 = time.time()
@@ -304,9 +307,9 @@ def manual_drive(ip: str):
             elif kb.is_pressed("s") or kb.is_pressed("down"):
                 move(ip, "back", speed)
             elif kb.is_pressed("a") or kb.is_pressed("left"):
-                move(ip, "left", speed/2)
+                move(ip, "left", speed)
             elif kb.is_pressed("d") or kb.is_pressed("right"):
-                move(ip, "right", speed/2)
+                move(ip, "right", speed)
             else:
                 stop_robot(ip)
             time.sleep(0.08)
