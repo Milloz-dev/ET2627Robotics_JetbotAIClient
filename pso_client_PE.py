@@ -3,42 +3,72 @@
 import requests
 import threading
 import time
-import random
-import math
 import argparse
+import random
 from typing import Optional, Dict, List
-
-# ─────────────────────────
-# CONFIG
-# ─────────────────────────
 
 ROBOT_IPS = [
     "194.47.156.43",
     "194.47.156.201",
-    "194.47.156.39"
+    "194.47.156.39",
+    "194.47.156.213"
 ]
 
-STREAM_PORT  = 8080
-API_PORT     = 8081
-TIMEOUT      = 1.5
-PSO_INTERVAL = 0.4
+colors = {
+    "194.47.156.43": "purple",
+    "194.47.156.201": "green",
+    "194.47.156.39": "blue",
+    "194.47.156.213": "yellow"
+}
 
-W   = 0.12
-C1  = 1.2
-C2  = 1.2
-MAX_SPEED = 0.15
-MAX_VX = 0.1
-MAX_VY = 0.1
+STREAM_PORT = 8080
+API_PORT = 8081
+TIMEOUT = 1.5
 
-SEARCH_TURN_SPEED = 0.15
+INTERVAL = 0.6
+MOTOR_SEND_INTERVAL = 0.8
+MOTOR_CHANGE_EPS = 0.025
 
+MAX_SPEED = 0.2
+SEARCH_TURN_SPEED = 0.12
 
-# ─────────────────────────────────────────────────────────────────────────────
-# LOW-LEVEL ROBOT COMMUNICATION
-# ─────────────────────────────────────────────────────────────────────────────
+GOAL_DISTANCE_CM = 25
+GOAL_CONFIRM_FRAMES = 2
+GOAL_CONFIRM_TIME = 0.30
+
+LEADER_WAIT_SPEED = 0.06
+RED_CONFIRM_FRAMES = 2
+RED_CONFIRM_TIME = 0.50
+MAX_FAKE_RED_DISTANCE_CM = 300.0
+
+LEADER_SPEED = 0.12
+LEADER_TURN_GAIN_CLOSE = 0.0005
+LEADER_TURN_GAIN_FAR = 0.0015
+
+FOLLOW_SPEED = 0.15
+FOLLOW_TURN_GAIN_CLOSE = 0.001
+FOLLOW_TURN_GAIN_FAR = 0.0020
+
+SIDE_OFFSET_DEG = 15.0
+FOLLOW_SLOW_CM = 45.0
+FOLLOW_STOP_CM = 20.0
+
+BACKUP_TIME = 3.0
+BACKUP_FAST = -0.15
+BACKUP_SLOW = -0.10
+
+STUCK_STILL_TIME = 2.5
+STUCK_ESCAPE_TIME = 1.5
+STUCK_EPS = 0.025
+STUCK_BACK_FAST = -0.12
+STUCK_BACK_SLOW = -0.06
+
+DIST_NEAR_CM = 30.0
+DIST_FAR_CM = 100.0
+
 
 def api(ip, path, method="GET", payload=None, timeout=TIMEOUT):
-    url = "http://{}:{}/{}".format(ip, API_PORT, path.lstrip("/"))
+    url = f"http://{ip}:{API_PORT}/{path.lstrip('/')}"
     try:
         if method == "GET":
             r = requests.get(url, timeout=timeout)
@@ -55,235 +85,345 @@ def get_detection(ip) -> Optional[Dict]:
 
 
 def send_motors(ip, left: float, right: float):
-    return api(
-        ip,
-        "/motors",
-        method="POST",
-        payload={"left": left, "right": right}
-    )
+    return api(ip, "/motors", method="POST",
+               payload={"left": float(left), "right": float(right)})
 
 
 def stop_robot(ip):
     return api(ip, "/stop", method="POST", payload={})
 
 
-def move(ip, action: str, speed: float = 0.2):
-    return api(
-        ip,
-        "/move",
-        method="POST",
-        payload={"action": action, "speed": speed}
-    )
+def stream_url(ip):
+    return f"http://{ip}:{STREAM_PORT}/stream"
 
 
-def stream_url(ip) -> str:
-    return "http://{}:{}/stream".format(ip, STREAM_PORT)
-
-
-def _clamp(v, lo, hi):
+def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# LEADER / DEPENDENCY HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
-
-def find_best_leader(states):
-    leaders = [s for s in states if s["state"] in ["LEADER", "GOAL"]]
-
-    if not leaders:
-        return None
-
-    best = min(leaders, key=lambda s: s["best_dist"])
-    return best["id"]
+def gain_from_distance(distance_cm, close_gain, far_gain):
+    d = clamp(distance_cm, DIST_NEAR_CM, DIST_FAR_CM)
+    t = (d - DIST_NEAR_CM) / (DIST_FAR_CM - DIST_NEAR_CM)
+    return close_gain + t * (far_gain - close_gain)
 
 
-def leader_can_move(leader_id, states):
-    """
-    Leader may move only if no non-goal/non-leader robot depends on it.
-    """
+def color_key(color):
+    return color + "s"
+
+
+def all_robots_ready(states):
     for s in states:
-        if s["id"] == leader_id:
-            continue
-
         if s["state"] in ["LEADER", "GOAL"]:
             continue
 
-        if s["dependency"] == leader_id:
-            return False
+        if s["state"] in ["DEPENDENT", "CHAIN_LEADER"]:
+            if s.get("leader_distance", 9999) <= FOLLOW_SLOW_CM:
+                continue
+
+        return False
 
     return True
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PARTICLE / ROBOT STATE
-# ─────────────────────────────────────────────────────────────────────────────
+def find_visible_red_robot(det, red_robot_states):
+    if det is None:
+        return None
 
-class Particle:
-    def __init__(self, ip: str, idx: int):
-        self.ip  = ip
+    closest = None
+    closest_dist = 9999.0
+
+    for leader in red_robot_states:
+        key = color_key(leader["color"])
+        seen_objects = det.get(key, [])
+
+        for obj in seen_objects:
+            dist = obj.get("distance_cm", 9999.0)
+
+            if dist < closest_dist:
+                closest_dist = dist
+                closest = {
+                    "id": leader["id"],
+                    "color": leader["color"],
+                    "direction_deg": obj.get("direction_deg", 0.0),
+                    "distance_cm": dist
+                }
+
+    return closest
+
+
+class RobotState:
+    def __init__(self, ip, idx):
+        self.ip = ip
         self.idx = idx
-
-        self.x = 0.0
-        self.y = 9999.0
-
-        self.vx = random.uniform(-0.3, 0.3)
-        self.vy = random.uniform(-0.05, 0.05)
-
-        self.best_x = self.x
-        self.best_y = self.y
-        self.best_dist = 9999.0
-
-        self.target_visible = False
-        self.last_detection = None
-
-        self._sweep_dir = random.choice([-1, 1])
-        self._sweep_cycles = 0
-        self._sweep_max = 12
-        self._just_saw = 0
+        self.color = colors[ip]
 
         self.state = "SEARCHING"
         self.dependency = None
+        self.visible_leader = None
 
-    def update_from_detection(self, det):
-        if det is None:
-            self.target_visible = False
+        self.target_visible = False
+        self.red_confirmed = False
+
+        self.red_angle = 0.0
+        self.red_distance = 9999.0
+
+        self.red_seen_count = 0
+        self.first_red_time = None
+
+        self.goal_seen_count = 0
+        self.goal_first_seen_time = None
+        self.reached_goal = False
+
+        self.backup_until = 0.0
+
+        self.still_since = None
+        self.stuck_escape_until = 0.0
+        self.stuck_escape_dir = random.choice([-1, 1])
+
+        self.last_detection = None
+
+        self.last_red_seen_time = 0
+        self.last_red_angle = 0.0
+
+        self.last_left = None
+        self.last_right = None
+        self.last_motor_send_time = 0.0
+
+    def update_detection(self, det):
+        self.last_detection = det
+
+        if self.reached_goal:
+            self.target_visible = True
+            self.red_confirmed = True
             return
 
-        self.last_detection = det
-        target = det.get("target")
+        target = None if det is None else det.get("target")
 
         if target:
             self.target_visible = True
-            self.x = target.get("direction_deg", 0.0)
-            self.y = target.get("distance_cm", 9999.0)
+            self.red_angle = target.get("direction_deg", 0.0)
+            self.last_red_seen_time = time.time()
+            self.last_red_angle = self.red_angle
+            self.red_distance = target.get("distance_cm", 9999.0)
 
-            dist = math.sqrt(self.x ** 2 + self.y ** 2)
+            if self.red_distance > MAX_FAKE_RED_DISTANCE_CM:
+                self.red_seen_count = 0
+                self.first_red_time = None
+                self.red_confirmed = False
+                self.goal_seen_count = 0
+                self.goal_first_seen_time = None
+                return
 
-            if dist < self.best_dist:
-                self.best_dist = dist
-                self.best_x = self.x
-                self.best_y = self.y
+            if self.first_red_time is None:
+                self.first_red_time = time.time()
+
+            self.red_seen_count += 1
+            seen_time = time.time() - self.first_red_time
+
+            if self.red_seen_count >= RED_CONFIRM_FRAMES or seen_time >= RED_CONFIRM_TIME:
+                self.red_confirmed = True
+
+            if self.red_distance <= GOAL_DISTANCE_CM:
+                if self.goal_first_seen_time is None:
+                    self.goal_first_seen_time = time.time()
+
+                self.goal_seen_count += 1
+                goal_seen_time = time.time() - self.goal_first_seen_time
+
+                if (
+                    self.goal_seen_count >= GOAL_CONFIRM_FRAMES
+                    or goal_seen_time >= GOAL_CONFIRM_TIME
+                ):
+                    self.reached_goal = True
+                    self.red_confirmed = True
+            else:
+                self.goal_seen_count = 0
+                self.goal_first_seen_time = None
+
         else:
             self.target_visible = False
+            self.red_confirmed = False
+            self.red_seen_count = 0
+            self.first_red_time = None
+            self.goal_seen_count = 0
+            self.goal_first_seen_time = None
 
-    def update_pso_velocity(self, global_best_x, global_best_y):
-        r1x, r1y = random.random(), random.random()
-        r2x, r2y = random.random(), random.random()
+    def decide_base_state(self):
+        self.dependency = None
+        self.visible_leader = None
 
-        self.vx = (
-            W * self.vx
-            + C1 * r1x * (self.best_x - self.x)
-            + C2 * r2x * (global_best_x - self.x)
-        )
-
-        self.vy = (
-            W * self.vy
-            + C1 * r1y * (self.best_y - self.y)
-            + C2 * r2y * (global_best_y - self.y)
-        )
-
-        self.vx = _clamp(self.vx, -MAX_VX, MAX_VX)
-        self.vy = _clamp(self.vy, -MAX_VY, MAX_VY)
-
-    def pso_update(self, global_best_x, global_best_y, global_target_visible, states):
-        self.update_pso_velocity(global_best_x, global_best_y)
-
-        # ─────────────────────────────
-        # PRIORITY 1: RED BOX
-        # ─────────────────────────────
-        if self.target_visible:
-            self.dependency = None
-
-            if self.y < 20.0:
-                self.state = "GOAL"
-                print(f"Bot{self.idx} GOAL -> stop")
-                return 0.0, 0.0
-
+        if self.reached_goal:
+            self.state = "GOAL"
+        elif self.red_confirmed:
             self.state = "LEADER"
-
-            print(
-                f"Bot{self.idx} LEADER sees red "
-                f"angle={self.x:.1f}°, dist={self.y:.1f}cm"
-            )
-
-            if leader_can_move(self.idx, states):
-                angle_deg = self.x
-
-                left_speed = 0.15 + (angle_deg * 0.0005)
-                right_speed = 0.15 - (angle_deg * 0.0005)
-
-                print(f"Bot{self.idx} LEADER -> move toward red")
-
-            else:
-                left_speed = 0.0
-                right_speed = 0.0
-
-                print(f"Bot{self.idx} LEADER -> waiting, someone depends on me")
-
-        # ─────────────────────────────
-        # SOMEONE ELSE SEES RED
-        # ─────────────────────────────
-        elif global_target_visible:
-            self.state = "DEPENDENT"
-            self.dependency = find_best_leader(states)
-
-            forward = _clamp(-self.vy * 1.5, -MAX_SPEED, MAX_SPEED)
-            turn = _clamp(self.vx * 0.25, -MAX_SPEED, MAX_SPEED)
-
-            left_speed = _clamp(forward - turn, -MAX_SPEED, MAX_SPEED)
-            right_speed = _clamp(forward + turn, -MAX_SPEED, MAX_SPEED)
-
-            print(
-                f"Bot{self.idx} DEPENDENT on Bot{self.dependency} "
-                f"-> PSO move"
-            )
-
-        # ─────────────────────────────
-        # NO RED SEEN BY ANYONE
-        # ─────────────────────────────
+        elif self.target_visible and not self.red_confirmed:
+            self.state = "VERIFYING_RED"
         else:
             self.state = "SEARCHING"
-            self.dependency = None
 
-            left_speed = SEARCH_TURN_SPEED
-            right_speed = 0.0
+    def stuck_escape(self, left, right, allow_escape=True):
+        now = time.time()
 
-            print(f"Bot{self.idx} SEARCHING")
+        if not allow_escape:
+            self.still_since = None
+            return left, right
 
-        print(
-            f"Bot{self.idx}: state={self.state}, "
-            f"dep={self.dependency}, "
-            f"motors=({left_speed:.2f}, {right_speed:.2f})"
-        )
+        if now < self.stuck_escape_until:
+            print(f"Bot{self.idx} {self.color}: stuck escape -> back up and turn")
 
-        return left_speed, right_speed
+            if self.stuck_escape_dir > 0:
+                return STUCK_BACK_FAST, STUCK_BACK_SLOW
+            else:
+                return STUCK_BACK_SLOW, STUCK_BACK_FAST
+
+        is_still = abs(left) < STUCK_EPS and abs(right) < STUCK_EPS
+
+        if is_still:
+            if self.still_since is None:
+                self.still_since = now
+
+            if now - self.still_since >= STUCK_STILL_TIME:
+                self.stuck_escape_until = now + STUCK_ESCAPE_TIME
+                self.stuck_escape_dir *= -1
+                self.still_since = None
+
+                print(f"Bot{self.idx} {self.color}: stood still too long -> escape")
+
+                if self.stuck_escape_dir > 0:
+                    return STUCK_BACK_FAST, STUCK_BACK_SLOW
+                else:
+                    return STUCK_BACK_SLOW, STUCK_BACK_FAST
+        else:
+            self.still_since = None
+
+        return left, right
+
+    def command(self, states):
+        if self.state == "GOAL":
+            print(f"Bot{self.idx} {self.color}: GOAL -> stand still")
+            return 0.0, 0.0
+
+        if self.state == "VERIFYING_RED":
+            print(
+                f"Bot{self.idx} {self.color}: VERIFYING_RED "
+                f"{self.red_seen_count}/{RED_CONFIRM_FRAMES} -> stop"
+            )
+            return 0.0, 0.0
+
+        if self.state == "LEADER":
+            ready = all_robots_ready(states)
+
+            gain = gain_from_distance(
+                self.red_distance,
+                LEADER_TURN_GAIN_CLOSE,
+                LEADER_TURN_GAIN_FAR
+            )
+
+            turn = self.red_angle * gain
+
+            if ready:
+                speed = LEADER_SPEED
+                print(f"Bot{self.idx} {self.color}: LEADER -> all ready, move to red")
+            else:
+                speed = LEADER_WAIT_SPEED
+                print(f"Bot{self.idx} {self.color}: LEADER -> slow creep while waiting")
+
+            left = speed + turn
+            right = speed - turn
+
+            left = clamp(left, -MAX_SPEED, MAX_SPEED)
+            right = clamp(right, -MAX_SPEED, MAX_SPEED)
+
+            return self.stuck_escape(left, right, allow_escape=True)
+
+        if self.state in ["DEPENDENT", "CHAIN_LEADER"] and self.visible_leader is not None:
+            angle = self.visible_leader["direction_deg"]
+            distance = self.visible_leader["distance_cm"]
+
+            if angle >= 0:
+                side_angle = angle + SIDE_OFFSET_DEG
+            else:
+                side_angle = angle - SIDE_OFFSET_DEG
+
+            now = time.time()
+
+            if distance < FOLLOW_STOP_CM:
+                self.backup_until = now + BACKUP_TIME
+
+            if now < self.backup_until:
+                print(
+                    f"Bot{self.idx} {self.color}: too close to "
+                    f"{self.visible_leader['color']} -> backing up"
+                )
+
+                if side_angle >= 0:
+                    return BACKUP_FAST, BACKUP_SLOW
+                else:
+                    return BACKUP_SLOW, BACKUP_FAST
+
+            if distance < FOLLOW_SLOW_CM:
+                speed = FOLLOW_SPEED * 0.55
+            else:
+                speed = FOLLOW_SPEED
+
+            gain = gain_from_distance(
+                distance,
+                FOLLOW_TURN_GAIN_CLOSE,
+                FOLLOW_TURN_GAIN_FAR
+            )
+
+            turn = side_angle * gain
+
+            left = speed + turn
+            right = speed - turn
+
+            left = clamp(left, -MAX_SPEED, MAX_SPEED)
+            right = clamp(right, -MAX_SPEED, MAX_SPEED)
+
+            print(
+                f"Bot{self.idx} {self.color}: {self.state} -> follow "
+                f"{self.visible_leader['color']} side_angle={side_angle:.1f}, "
+                f"dist={distance:.1f}, gain={gain:.4f}"
+            )
+
+            return self.stuck_escape(left, right, allow_escape=True)
+
+        now = time.time()
+
+        if now - self.last_red_seen_time < 0.7:
+            print(
+                f"Bot{self.idx} {self.color}: SEARCHING "
+                f"(recent red memory) -> slow tracking"
+            )
+
+            angle = self.last_red_angle
+            turn = angle * 0.002
+
+            left = 0.07 + turn
+            right = 0.07 - turn
+
+            left = clamp(left, -MAX_SPEED, MAX_SPEED)
+            right = clamp(right, -MAX_SPEED, MAX_SPEED)
+
+            return self.stuck_escape(left, right, allow_escape=True)
+
+        print(f"Bot{self.idx} {self.color}: SEARCHING -> fast spin")
+        return SEARCH_TURN_SPEED, 0.0
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SWARM CONTROLLER
-# ─────────────────────────────────────────────────────────────────────────────
-
-class SwarmController:
+class Controller:
     def __init__(self, ips: List[str]):
-        self.particles = [Particle(ip, i) for i, ip in enumerate(ips)]
+        self.robots = [RobotState(ip, i) for i, ip in enumerate(ips)]
 
-        self.global_best_x = 0.0
-        self.global_best_y = 9999.0
-        self.global_best_dist = 9999.0
+    def fetch_all(self):
+        results = [None] * len(self.robots)
 
-        self.global_target_visible = False
-        self._running = False
-
-    def _fetch_all(self):
-        results = [None] * len(self.particles)
-
-        def _fetch(idx, p):
-            results[idx] = get_detection(p.ip)
+        def fetch(idx, robot):
+            results[idx] = get_detection(robot.ip)
 
         threads = [
-            threading.Thread(target=_fetch, args=(i, p))
-            for i, p in enumerate(self.particles)
+            threading.Thread(target=fetch, args=(i, robot))
+            for i, robot in enumerate(self.robots)
         ]
 
         for t in threads:
@@ -294,13 +434,39 @@ class SwarmController:
 
         return results
 
-    def _send_all(self, commands):
-        def _send(p, l, r):
-            send_motors(p.ip, l, r)
+    def send_all(self, commands):
+        now = time.time()
+
+        def should_send(robot, left, right):
+            if robot.last_left is None or robot.last_right is None:
+                return True
+
+            if now - robot.last_motor_send_time >= MOTOR_SEND_INTERVAL:
+                return True
+
+            if abs(left - robot.last_left) >= MOTOR_CHANGE_EPS:
+                return True
+
+            if abs(right - robot.last_right) >= MOTOR_CHANGE_EPS:
+                return True
+
+            return False
+
+        send_jobs = []
+
+        for robot, (left, right) in zip(self.robots, commands):
+            if should_send(robot, left, right):
+                robot.last_left = left
+                robot.last_right = right
+                robot.last_motor_send_time = now
+                send_jobs.append((robot, left, right))
+
+        if not send_jobs:
+            return
 
         threads = [
-            threading.Thread(target=_send, args=(p, l, r))
-            for p, (l, r) in zip(self.particles, commands)
+            threading.Thread(target=send_motors, args=(robot.ip, left, right))
+            for robot, left, right in send_jobs
         ]
 
         for t in threads:
@@ -312,67 +478,98 @@ class SwarmController:
     def build_states(self):
         return [
             {
-                "id": p.idx,
-                "state": p.state,
-                "dependency": p.dependency,
-                "best_dist": p.best_dist,
-                "target_visible": p.target_visible
+                "id": r.idx,
+                "ip": r.ip,
+                "color": r.color,
+                "state": r.state,
+                "dependency": r.dependency,
+                "target_visible": r.target_visible,
+                "red_confirmed": r.red_confirmed,
+                "leader_distance": (
+                    r.visible_leader["distance_cm"]
+                    if r.visible_leader is not None
+                    else 9999
+                ),
             }
-            for p in self.particles
+            for r in self.robots
         ]
 
     def step(self):
-        detections = self._fetch_all()
+        detections = self.fetch_all()
 
-        for p, det in zip(self.particles, detections):
-            p.update_from_detection(det)
+        for robot, det in zip(self.robots, detections):
+            robot.update_detection(det)
 
-        for p in self.particles:
-            if p.best_dist < self.global_best_dist:
-                self.global_best_dist = p.best_dist
-                self.global_best_x = p.best_x
-                self.global_best_y = p.best_y
+        for robot in self.robots:
+            robot.decide_base_state()
 
-        self.global_target_visible = any(p.target_visible for p in self.particles)
+        red_robot_states = [
+            {
+                "id": r.idx,
+                "ip": r.ip,
+                "color": r.color,
+                "state": r.state
+            }
+            for r in self.robots
+            if r.state in ["LEADER", "GOAL"]
+        ]
+
+        for robot in self.robots:
+            if robot.state in ["LEADER", "GOAL", "VERIFYING_RED"]:
+                continue
+
+            visible = find_visible_red_robot(
+                robot.last_detection, red_robot_states
+            )
+
+            if visible is not None:
+                robot.state = "DEPENDENT"
+                robot.dependency = visible["id"]
+                robot.visible_leader = visible
+            else:
+                robot.state = "SEARCHING"
+                robot.dependency = None
+                robot.visible_leader = None
+
+        for robot in self.robots:
+            if robot.state == "DEPENDENT":
+                has_follower = any(
+                    other.dependency == robot.idx
+                    for other in self.robots
+                    if other.idx != robot.idx
+                )
+
+                if has_follower:
+                    robot.state = "CHAIN_LEADER"
 
         states = self.build_states()
+        ready = all_robots_ready(states)
+
+        print("\n--- STATES ---")
+        print(
+            f"Red seen by: {[r.color for r in self.robots if r.state in ['LEADER', 'GOAL']]}"
+        )
+        print(f"All robots ready: {ready}")
+
+        for s in states:
+            print(
+                f"Bot{s['id']} {s['color']}: "
+                f"{s['state']} dep={s['dependency']} "
+                f"red={s['target_visible']} confirmed={s['red_confirmed']}"
+            )
 
         commands = []
 
-        for p in self.particles:
-            l, r = p.pso_update(
-                self.global_best_x,
-                self.global_best_y,
-                self.global_target_visible,
-                states
-            )
+        for robot in self.robots:
+            left, right = robot.command(states)
+            commands.append((left, right))
 
-            commands.append((l, r))
-
-        self._send_all(commands)
-
-    def run(self):
-        self._running = True
-
-        try:
-            while self._running:
-                t0 = time.time()
-
-                self.step()
-
-                elapsed = time.time() - t0
-                time.sleep(max(0.0, PSO_INTERVAL - elapsed))
-
-        except KeyboardInterrupt:
-            print("\n[PSO] Stopping all robots...")
-            self.stop_all()
+        self.send_all(commands)
 
     def stop_all(self):
-        self._running = False
-
         threads = [
-            threading.Thread(target=stop_robot, args=(p.ip,))
-            for p in self.particles
+            threading.Thread(target=stop_robot, args=(robot.ip,))
+            for robot in self.robots
         ]
 
         for t in threads:
@@ -381,115 +578,51 @@ class SwarmController:
         for t in threads:
             t.join()
 
-        print("[PSO] All robots stopped.")
+        print("All robots stopped.")
 
+    def run(self):
+        try:
+            while True:
+                t0 = time.time()
+                self.step()
+                elapsed = time.time() - t0
+                time.sleep(max(0.0, INTERVAL - elapsed))
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MANUAL DRIVE
-# ─────────────────────────────────────────────────────────────────────────────
+        except KeyboardInterrupt:
+            print("\nStopping...")
+            self.stop_all()
 
-def manual_drive(ip: str):
-    try:
-        import keyboard as kb
-
-        print("[MANUAL] Driving {}  (WASD / arrows, Q to quit)".format(ip))
-        speed = 0.2
-
-        while True:
-            if kb.is_pressed("q"):
-                break
-            elif kb.is_pressed("w") or kb.is_pressed("up"):
-                move(ip, "forward", speed)
-            elif kb.is_pressed("s") or kb.is_pressed("down"):
-                move(ip, "back", speed)
-            elif kb.is_pressed("a") or kb.is_pressed("left"):
-                move(ip, "left", speed)
-            elif kb.is_pressed("d") or kb.is_pressed("right"):
-                move(ip, "right", speed)
-            else:
-                stop_robot(ip)
-
-            time.sleep(0.08)
-
-    except ImportError:
-        print("[MANUAL] 'keyboard' not installed – using text prompts.")
-        print("Commands: w=forward  s=back  a=left  d=right  q=quit")
-
-        while True:
-            cmd = input("cmd> ").strip().lower()
-
-            if cmd == "q":
-                break
-            elif cmd == "w":
-                move(ip, "forward")
-            elif cmd == "s":
-                move(ip, "back")
-            elif cmd == "a":
-                move(ip, "left")
-            elif cmd == "d":
-                move(ip, "right")
-            else:
-                stop_robot(ip)
-
-    stop_robot(ip)
-    print("[MANUAL] Done.")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ENTRY POINT
-# ─────────────────────────────────────────────────────────────────────────────
 
 def print_stream_urls():
-    print("\n  ── Live stream URLs ───────────────────────────────")
-
+    print("\n── Live stream URLs ──")
     for i, ip in enumerate(ROBOT_IPS):
-        print("  Bot{}: http://{}:{}/stream".format(i, ip, STREAM_PORT))
-
-    print("  ───────────────────────────────────────────────────\n")
+        print(f"Bot{i} {colors[ip]}: {stream_url(ip)}")
+    print("──────────────────────\n")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="JetBot Leader/Dependency Swarm Client")
-
-    parser.add_argument(
-        "--manual",
-        type=int,
-        default=-1,
-        help="Index of robot to drive manually"
+    parser = argparse.ArgumentParser(
+        description="Simple Goal-Seeking JetBot Controller"
     )
-
-    parser.add_argument(
-        "--ping",
-        action="store_true",
-        help="Ping all robots and print detection status"
-    )
-
+    parser.add_argument("--ping", action="store_true")
     args = parser.parse_args()
 
     print_stream_urls()
 
     if args.ping:
-        print("[PING] Checking all robots...")
+        print("[PING] Checking robots...")
 
         for i, ip in enumerate(ROBOT_IPS):
             det = get_detection(ip)
 
             if det:
                 print(
-                    "  Bot{} ({}) OK – target_visible={}".format(
-                        i,
-                        ip,
-                        det.get("target") is not None
-                    )
+                    f"Bot{i} {colors[ip]} OK "
+                    f"target_visible={det.get('target') is not None}"
                 )
             else:
-                print("  Bot{} ({}) UNREACHABLE".format(i, ip))
-
-    elif args.manual >= 0:
-        ip = ROBOT_IPS[args.manual]
-        print("[MANUAL] Controlling Bot{} at {}".format(args.manual, ip))
-        manual_drive(ip)
+                print(f"Bot{i} {colors[ip]} UNREACHABLE")
 
     else:
-        swarm = SwarmController(ROBOT_IPS)
-        swarm.run()
+        controller = Controller(ROBOT_IPS)
+        controller.run()
