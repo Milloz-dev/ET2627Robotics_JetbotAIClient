@@ -1,0 +1,1090 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JetBot PSO Command Center</title>
+  <style>
+    :root {
+      --bg: #0a0c0f;
+      --surface: #111418;
+      --surface2: #181d23;
+      --border: #232a33;
+      --accent: #e24b4a;
+      --green: #1D9E75;
+      --amber: #EF9F27;
+      --blue: #378ADD;
+      --text: #e8eaed;
+      --muted: #6b7685;
+      --dim: #3a4452;
+      --radius: 8px;
+      --radius-lg: 12px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: 56px 1fr;
+      overflow-x: hidden;
+    }
+
+    /* ── TOP BAR ── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      gap: 16px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .logo {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      color: var(--accent);
+      text-transform: uppercase;
+    }
+
+    .logo span {
+      color: var(--text);
+    }
+
+    .header-badges {
+      display: flex;
+      gap: 8px;
+      margin-left: auto;
+      align-items: center;
+    }
+
+    .badge {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      padding: 3px 8px;
+      border-radius: 4px;
+      text-transform: uppercase;
+    }
+
+    .badge-red {
+      background: rgba(226, 75, 74, 0.15);
+      color: var(--accent);
+      border: 1px solid rgba(226, 75, 74, 0.3);
+    }
+
+    .badge-green {
+      background: rgba(29, 158, 117, 0.15);
+      color: var(--green);
+      border: 1px solid rgba(29, 158, 117, 0.3);
+    }
+
+    .badge-amber {
+      background: rgba(239, 159, 39, 0.15);
+      color: var(--amber);
+      border: 1px solid rgba(239, 159, 39, 0.3);
+    }
+
+    #pso-status-badge {
+      cursor: default;
+    }
+
+    /* ── MAIN LAYOUT ── */
+    main {
+      display: grid;
+      grid-template-columns: 1fr 300px;
+      gap: 0;
+      height: calc(100vh - 56px);
+      overflow: hidden;
+    }
+
+    /* ── STREAM GRID ── */
+    .stream-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: 1fr 1fr;
+      gap: 1px;
+      background: var(--border);
+      overflow: hidden;
+    }
+
+    .stream-cell {
+      background: var(--bg);
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .stream-cell.focused {
+      grid-column: 1 / 3;
+      grid-row: 1 / 3;
+    }
+
+    .stream-cell img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      cursor: pointer;
+      background: #05080a;
+    }
+
+
+    .cell-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding: 8px 10px;
+      background: linear-gradient(to bottom, rgba(0, 0, 0, 0.7) 0%, transparent 100%);
+      pointer-events: none;
+    }
+
+    .cell-id {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      color: #fff;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+    }
+
+    .cell-status {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--dim);
+      flex-shrink: 0;
+    }
+
+    .dot.online {
+      background: var(--green);
+      box-shadow: 0 0 4px var(--green);
+    }
+
+    .dot.target {
+      background: var(--accent);
+      box-shadow: 0 0 4px var(--accent);
+    }
+
+    .dot.offline {
+      background: var(--dim);
+    }
+
+    .cell-bottom {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      padding: 6px 10px;
+      background: linear-gradient(to top, rgba(0, 0, 0, 0.75) 0%, transparent 100%);
+      font-size: 10px;
+      display: flex;
+      gap: 12px;
+      pointer-events: none;
+    }
+
+    .motor-bar {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      color: rgba(255, 255, 255, 0.7);
+    }
+
+    .motor-val {
+      font-size: 10px;
+      font-weight: 700;
+      min-width: 36px;
+      color: #fff;
+    }
+
+    .expand-btn {
+      position: absolute;
+      bottom: 8px;
+      right: 8px;
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: rgba(255, 255, 255, 0.8);
+      border-radius: 4px;
+      font-size: 11px;
+      padding: 3px 7px;
+      cursor: pointer;
+      font-family: inherit;
+      letter-spacing: 0.04em;
+    }
+
+    .expand-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .no-stream {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 12px;
+      gap: 8px;
+      background: var(--bg);
+      pointer-events: none;
+    }
+
+    .no-stream svg {
+      opacity: 0.25;
+    }
+
+    /* ── SIDEBAR ── */
+    .sidebar {
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    .sidebar-section {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .sidebar-section:last-child {
+      border-bottom: none;
+    }
+
+    .section-title {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    /* Robot status rows */
+    .robot-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: background 0.12s;
+      margin-bottom: 3px;
+      border: 1px solid transparent;
+    }
+
+    .robot-row:hover {
+      background: var(--surface2);
+    }
+
+    .robot-row.active {
+      background: var(--surface2);
+      border-color: var(--border);
+    }
+
+    .robot-num {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .robot-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .robot-ip {
+      font-size: 11px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .robot-detail {
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 1px;
+    }
+
+    .robot-target-pill {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.07em;
+      padding: 2px 6px;
+      border-radius: 3px;
+      background: rgba(226, 75, 74, 0.18);
+      color: var(--accent);
+      border: 1px solid rgba(226, 75, 74, 0.3);
+      text-transform: uppercase;
+      flex-shrink: 0;
+    }
+
+    /* PSO chart */
+    .pso-canvas-wrap {
+      position: relative;
+      height: 100px;
+      background: var(--bg);
+      border-radius: var(--radius);
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+
+    #pso-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .pso-stat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-top: 10px;
+    }
+
+    .pso-stat {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 8px 10px;
+    }
+
+    .pso-stat-label {
+      font-size: 9px;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .pso-stat-val {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text);
+      margin-top: 2px;
+    }
+
+    /* Controls */
+    .ctrl-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 5px;
+    }
+
+    .ctrl-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: var(--radius);
+      padding: 9px 4px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-align: center;
+      transition: background 0.1s, border-color 0.1s;
+    }
+
+    .ctrl-btn:hover {
+      background: var(--dim);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .ctrl-btn:active {
+      transform: scale(0.96);
+    }
+
+    .ctrl-btn.danger {
+      border-color: rgba(226, 75, 74, 0.4);
+      color: var(--accent);
+    }
+
+    .ctrl-btn.primary {
+      border-color: rgba(55, 138, 221, 0.4);
+      color: var(--blue);
+    }
+
+    .ctrl-spacer {
+      background: transparent;
+      border: none;
+      pointer-events: none;
+    }
+
+    .speed-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .speed-label {
+      font-size: 10px;
+      color: var(--muted);
+      min-width: 38px;
+    }
+
+    .speed-slider {
+      flex: 1;
+      accent-color: var(--blue);
+      cursor: pointer;
+    }
+
+    .speed-val {
+      font-size: 11px;
+      font-weight: 700;
+      min-width: 30px;
+      text-align: right;
+    }
+
+    .bot-select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: var(--radius);
+      padding: 6px 8px;
+      font-family: inherit;
+      font-size: 11px;
+      margin-bottom: 10px;
+      cursor: pointer;
+    }
+
+    .log-box {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 8px;
+      height: 80px;
+      overflow-y: auto;
+      font-size: 9px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .log-box .log-ok {
+      color: var(--green);
+    }
+
+    .log-box .log-warn {
+      color: var(--amber);
+    }
+
+    .log-box .log-target {
+      color: var(--accent);
+    }
+
+    .stream-url-box {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 8px 10px;
+      font-size: 10px;
+      color: var(--blue);
+      word-break: break-all;
+      cursor: pointer;
+      margin-top: 6px;
+    }
+
+    .stream-url-box:hover {
+      text-decoration: underline;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--dim);
+      border-radius: 2px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <header>
+    <div class="logo">Jet<span>Swarm</span> PSO</div>
+    <div class="header-badges">
+      <span class="badge badge-red" id="target-global-badge">TARGET: SEARCHING</span>
+      <span class="badge badge-amber" id="pso-status-badge">PSO: IDLE</span>
+      <span class="badge badge-green" id="online-badge">0 / 4 ONLINE</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- Stream grid -->
+    <div class="stream-grid" id="stream-grid">
+      <!-- Generated by JS -->
+    </div>
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+
+      <div class="sidebar-section">
+        <div class="section-title">Robot Status</div>
+        <div id="robot-list"></div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-title">PSO — global best</div>
+        <div class="pso-canvas-wrap">
+          <canvas id="pso-canvas"></canvas>
+        </div>
+        <div class="pso-stat-grid">
+          <div class="pso-stat">
+            <div class="pso-stat-label">Best dist</div>
+            <div class="pso-stat-val" id="stat-dist">—</div>
+          </div>
+          <div class="pso-stat">
+            <div class="pso-stat-label">Direction</div>
+            <div class="pso-stat-val" id="stat-dir">—</div>
+          </div>
+          <div class="pso-stat">
+            <div class="pso-stat-label">Visible</div>
+            <div class="pso-stat-val" id="stat-visible">0 / 4</div>
+          </div>
+          <div class="pso-stat">
+            <div class="pso-stat-label">Iterations</div>
+            <div class="pso-stat-val" id="stat-iter">0</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-title">Manual Control</div>
+        <select class="bot-select" id="manual-bot">
+          <option value="-1">— select robot —</option>
+          <option value="0">Bot 0 — 194.47.156.201</option>
+          <option value="1">Bot 1 — 194.47.156.39</option>
+          <option value="2">Bot 2 — 194.47.156.43</option>
+          <option value="3">Bot 3 — 194.47.156.213</option>
+        </select>
+        <div class="ctrl-grid">
+          <div class="ctrl-spacer"></div>
+          <button class="ctrl-btn" id="btn-fwd">▲ FWD</button>
+          <div class="ctrl-spacer"></div>
+          <button class="ctrl-btn" id="btn-left">◄ LEFT</button>
+          <button class="ctrl-btn danger" id="btn-stop">■ STOP</button>
+          <button class="ctrl-btn" id="btn-right">RIGHT ►</button>
+          <div class="ctrl-spacer"></div>
+          <button class="ctrl-btn" id="btn-back">▼ BACK</button>
+          <div class="ctrl-spacer"></div>
+        </div>
+        <div class="speed-row">
+          <span class="speed-label">Speed</span>
+          <input type="range" min="10" max="90" value="40" step="5" class="speed-slider" id="speed-slider">
+          <span class="speed-val" id="speed-val">40%</span>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-title">Live Stream URL</div>
+        <select class="bot-select" id="stream-bot-select" style="margin-bottom:0">
+          <option value="0">Bot 0 — 194.47.156.201</option>
+          <option value="1">Bot 1 — 194.47.156.39</option>
+          <option value="2">Bot 2 — 194.47.156.43</option>
+          <option value="3">Bot 3 — 194.47.156.213</option>
+        </select>
+        <div class="stream-url-box" id="stream-url-display" onclick="window.open(this.dataset.url,'_blank')">
+          http://194.47.156.201:8080/stream
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-title">Event Log</div>
+        <div class="log-box" id="log-box"></div>
+      </div>
+
+    </aside>
+  </main>
+
+  <script>
+    const ROBOTS = [
+      { ip: "194.47.156.39", label: "blue" },
+      { ip: "194.47.156.201", label: "green" },
+      { ip: "194.47.156.43", label: "purple" },
+      { ip: "194.47.156.213", label: "yellow" },
+    ];
+    const STREAM_PORT = 8080;
+    const API_PORT = 8081;
+    const POLL_MS = 600;
+
+    let state = ROBOTS.map(() => ({
+      online: false,
+      target: null,
+      jetbots: [],
+      motors: { left: 0, right: 0 },
+      lastSeen: 0,
+    }));
+
+    let pso = {
+      iter: 0,
+      globalBestDist: 99,
+      globalBestDir: 0,
+      distHistory: [],
+      running: false,
+    };
+
+    // PSO parameters
+    const W = 0.5, C1 = 1.5, C2 = 1.5, MAX_SPD = 0.55;
+    let particles = ROBOTS.map(() => ({
+      x: 0, y: 99, vx: (Math.random() - 0.5) * 4, vy: (Math.random() - 0.5) * 0.2,
+      bestX: 0, bestY: 99, bestDist: 99,
+    }));
+
+    let focusedBot = null;
+
+    // ── Build stream grid ─────────────────────────────────────────────────────────
+    function buildGrid() {
+      const grid = document.getElementById('stream-grid');
+      grid.innerHTML = '';
+      ROBOTS.forEach((r, i) => {
+        const cell = document.createElement('div');
+        cell.className = 'stream-cell';
+        cell.id = `cell-${i}`;
+        cell.innerHTML = `
+      <img id="stream-img-${i}" src="http://${r.ip}:${STREAM_PORT}/stream"
+           alt="stream ${i}"
+           onerror="this.style.opacity='0.1'"
+           onload="this.style.opacity='1'">
+      <div class="no-stream" id="no-stream-${i}" style="display:none">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M15 10l4.553-2.069A1 1 0 0121 8.87v6.26a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"/>
+          <line x1="3" y1="3" x2="21" y2="21" stroke-width="1.5"/>
+        </svg>
+        No signal
+      </div>
+      <div class="cell-overlay">
+        <span class="cell-id">${r.label} · ${r.ip}</span>
+        <div class="cell-status">
+          <div class="dot offline" id="dot-${i}"></div>
+          <span id="cell-label-${i}" style="color:rgba(255,255,255,0.6);font-size:10px">offline</span>
+        </div>
+      </div>
+      <div class="cell-bottom">
+        <div class="motor-bar">L: <span class="motor-val" id="motor-l-${i}">0.00</span></div>
+        <div class="motor-bar">R: <span class="motor-val" id="motor-r-${i}">0.00</span></div>
+      </div>
+      <button class="expand-btn" onclick="toggleFocus(${i})">⛶</button>`;
+        grid.appendChild(cell);
+      });
+    }
+
+    function toggleFocus(i) {
+      const cells = document.querySelectorAll('.stream-cell');
+      if (focusedBot === i) {
+        focusedBot = null;
+        cells.forEach(c => { c.style.display = 'flex'; c.classList.remove('focused'); });
+      } else {
+        focusedBot = i;
+        cells.forEach((c, j) => {
+          if (j === i) { c.classList.add('focused'); c.style.display = 'flex'; }
+          else { c.style.display = 'none'; }
+        });
+      }
+    }
+
+    // ── Build robot list in sidebar ───────────────────────────────────────────────
+    function buildRobotList() {
+      const el = document.getElementById('robot-list');
+      el.innerHTML = '';
+      ROBOTS.forEach((r, i) => {
+        const row = document.createElement('div');
+        row.className = 'robot-row';
+        row.id = `robot-row-${i}`;
+        row.innerHTML = `
+      <div class="robot-num" id="rnum-${i}">${i}</div>
+      <div class="robot-info">
+        <div class="robot-ip">${r.ip}</div>
+        <div class="robot-detail" id="rdetail-${i}">connecting…</div>
+      </div>
+      <div class="robot-target-pill" id="rpill-${i}" style="display:none">TARGET</div>`;
+        row.onclick = () => focusStream(i);
+        el.appendChild(row);
+      });
+    }
+
+    function focusStream(i) {
+      document.querySelectorAll('.robot-row').forEach(r => r.classList.remove('active'));
+      document.getElementById(`robot-row-${i}`).classList.add('active');
+    }
+
+    // ── Fetch detection from a robot ──────────────────────────────────────────────
+    async function fetchDetection(i) {
+      const r = ROBOTS[i];
+      try {
+        const resp = await fetch(`http://${r.ip}:${API_PORT}/detection`,
+          { signal: AbortSignal.timeout(1400) });
+        if (!resp.ok) throw new Error(resp.status);
+        const data = await resp.json();
+        state[i].online = true;
+        state[i].target = data.target;
+        state[i].jetbots = data.jetbots || [];
+        state[i].lastSeen = Date.now();
+        return data;
+      } catch {
+        state[i].online = false;
+        return null;
+      }
+    }
+
+    // ── Send motor command ────────────────────────────────────────────────────────
+    async function sendMotors(i, left, right) {
+      const r = ROBOTS[i];
+      try {
+        await fetch(`http://${r.ip}:${API_PORT}/motors`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ left, right }),
+          signal: AbortSignal.timeout(1200),
+        });
+        state[i].motors = { left, right };
+      } catch { }
+    }
+
+    async function sendMove(i, action, speed) {
+      const r = ROBOTS[i];
+      try {
+        await fetch(`http://${r.ip}:${API_PORT}/move`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, speed }),
+          signal: AbortSignal.timeout(1200),
+        });
+      } catch { }
+    }
+
+    async function sendStop(i) {
+      const r = ROBOTS[i];
+      try {
+        await fetch(`http://${r.ip}:${API_PORT}/stop`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: '{}', signal: AbortSignal.timeout(1200),
+        });
+        state[i].motors = { left: 0, right: 0 };
+      } catch { }
+    }
+
+    // ── PSO step ──────────────────────────────────────────────────────────────────
+    function psoStep() {
+      let anyVisible = state.some(s => s.online && s.target);
+
+      // Update particles from real detections
+      ROBOTS.forEach((_, i) => {
+        const s = state[i];
+        const p = particles[i];
+        if (!s.online) return;
+        if (s.target) {
+          p.x = s.target.direction_deg || 0;
+          p.y = s.target.distance_m || 99;
+          const dist = Math.sqrt(p.x * p.x + p.y * p.y);
+          if (dist < p.bestDist) {
+            p.bestDist = dist; p.bestX = p.x; p.bestY = p.y;
+          }
+        }
+      });
+
+      // Update global best
+      let gbX = pso.globalBestDir, gbY = pso.globalBestDist;
+      particles.forEach(p => {
+        if (p.bestDist < pso.globalBestDist) {
+          pso.globalBestDist = p.bestDist;
+          pso.globalBestDir = p.bestX;
+          gbX = p.bestX; gbY = p.bestY;
+        }
+      });
+
+      // Compute and apply motor commands for each robot
+      ROBOTS.forEach((_, i) => {
+        const p = particles[i];
+        const r1x = Math.random(), r1y = Math.random();
+        const r2x = Math.random(), r2y = Math.random();
+        p.vx = W * p.vx + C1 * r1x * (p.bestX - p.x) + C2 * r2x * (gbX - p.x);
+        p.vy = W * p.vy + C1 * r1y * (p.bestY - p.y) + C2 * r2y * (gbY - p.y);
+
+        let fwd, turn;
+        if (anyVisible || state[i].target) {
+          fwd = Math.max(-MAX_SPD, Math.min(MAX_SPD, -p.vy * 1.5));
+          turn = Math.max(-MAX_SPD, Math.min(MAX_SPD, p.vx * 0.04));
+        } else {
+          fwd = 0;
+          turn = (Math.random() > 0.5 ? 1 : -1) * 0.3;
+        }
+
+        const L = Math.max(-MAX_SPD, Math.min(MAX_SPD, fwd - turn));
+        const R = Math.max(-MAX_SPD, Math.min(MAX_SPD, fwd + turn));
+
+        if (state[i].online) sendMotors(i, L, R);
+        state[i].motors = { left: L, right: R };
+      });
+
+      pso.iter++;
+      pso.distHistory.push(pso.globalBestDist > 90 ? null : pso.globalBestDist);
+      if (pso.distHistory.length > 60) pso.distHistory.shift();
+    }
+
+    // ── Update UI ─────────────────────────────────────────────────────────────────
+    function updateUI() {
+      let onlineCount = 0;
+      let targetCount = 0;
+
+      ROBOTS.forEach((r, i) => {
+        const s = state[i];
+        const online = s.online;
+        if (online) onlineCount++;
+        if (s.target) targetCount++;
+
+        // Stream cell status
+        const dot = document.getElementById(`dot-${i}`);
+        const clbl = document.getElementById(`cell-label-${i}`);
+        const ml = document.getElementById(`motor-l-${i}`);
+        const mr = document.getElementById(`motor-r-${i}`);
+
+        dot.className = 'dot ' + (online ? (s.target ? 'target' : 'online') : 'offline');
+        clbl.textContent = online ? (s.target ? '🎯 TARGET' : 'online') : 'offline';
+        clbl.style.color = online ? (s.target ? '#e24b4a' : 'rgba(255,255,255,0.5)') : '#3a4452';
+        ml.textContent = s.motors.left.toFixed(2);
+        mr.textContent = s.motors.right.toFixed(2);
+
+        // Robot list
+        const detail = document.getElementById(`rdetail-${i}`);
+        const pill = document.getElementById(`rpill-${i}`);
+        const rnum = document.getElementById(`rnum-${i}`);
+
+        if (online) {
+          const parts = [];
+          if (s.target) parts.push(`${s.target.distance_m.toFixed(1)}m  ${s.target.direction_deg.toFixed(0)}°`);
+          if (s.jetbots.length > 0) parts.push(`${s.jetbots.length} bot(s) nearby`);
+          detail.textContent = parts.join(' · ') || 'no detections';
+          pill.style.display = s.target ? '' : 'none';
+          rnum.style.borderColor = s.target ? 'rgba(226,75,74,0.5)' : 'var(--border)';
+        } else {
+          detail.textContent = 'offline';
+          pill.style.display = 'none';
+          rnum.style.borderColor = 'var(--border)';
+        }
+      });
+
+      // Header badges
+      document.getElementById('online-badge').textContent
+        = `${onlineCount} / ${ROBOTS.length} ONLINE`;
+      document.getElementById('target-global-badge').textContent
+        = targetCount > 0 ? `TARGET: ${targetCount} BOT(S) LOCKED` : 'TARGET: SEARCHING';
+      document.getElementById('target-global-badge').style.color
+        = targetCount > 0 ? '#e24b4a' : '#EF9F27';
+      document.getElementById('pso-status-badge').textContent
+        = pso.running ? `PSO: ITER ${pso.iter}` : 'PSO: IDLE';
+
+      // PSO stats
+      document.getElementById('stat-dist').textContent
+        = pso.globalBestDist > 90 ? '—' : pso.globalBestDist.toFixed(2) + 'm';
+      document.getElementById('stat-dir').textContent
+        = pso.globalBestDist > 90 ? '—' : pso.globalBestDir.toFixed(1) + '°';
+      document.getElementById('stat-visible').textContent = `${targetCount} / ${ROBOTS.length}`;
+      document.getElementById('stat-iter').textContent = pso.iter;
+
+      drawPsoCanvas();
+    }
+
+    // ── PSO mini chart ────────────────────────────────────────────────────────────
+    function drawPsoCanvas() {
+      const canvas = document.getElementById('pso-canvas');
+      if (!canvas.getContext) return;
+      const W = canvas.width = canvas.offsetWidth;
+      const H = canvas.height = canvas.offsetHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, W, H);
+
+      const hist = pso.distHistory.filter(v => v !== null);
+      if (hist.length < 2) {
+        ctx.fillStyle = '#3a4452';
+        ctx.font = '10px monospace';
+        ctx.fillText('waiting for data…', 10, H / 2 + 4);
+        return;
+      }
+
+      const maxV = Math.max(...hist, 1);
+      const pts = hist.map((v, i) => [
+        (i / (hist.length - 1)) * W,
+        H - (v / maxV) * (H - 10) - 2
+      ]);
+
+      ctx.beginPath();
+      pts.forEach(([x, y], i) => i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y));
+      ctx.strokeStyle = '#e24b4a';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
+      ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
+      ctx.fillStyle = 'rgba(226,75,74,0.12)';
+      ctx.fill();
+    }
+
+    // ── Polling loop ──────────────────────────────────────────────────────────────
+    let psoTimer = null;
+
+    async function pollAll() {
+      await Promise.all(ROBOTS.map((_, i) => fetchDetection(i)));
+      if (pso.running) psoStep();
+      updateUI();
+    }
+
+    // ── PSO start / stop ──────────────────────────────────────────────────────────
+    function startPso() {
+      pso.running = true;
+      log('PSO started', 'ok');
+      document.getElementById('pso-status-badge').textContent = 'PSO: RUNNING';
+    }
+
+    function stopPso() {
+      pso.running = false;
+      ROBOTS.forEach((_, i) => { if (state[i].online) sendStop(i); });
+      log('PSO stopped — all motors halted', 'warn');
+    }
+
+    // ── Manual controls ───────────────────────────────────────────────────────────
+    function getManualBot() {
+      return parseInt(document.getElementById('manual-bot').value);
+    }
+    function getSpeed() {
+      return parseInt(document.getElementById('speed-slider').value) / 100;
+    }
+
+    function wireControls() {
+      const speedSlider = document.getElementById('speed-slider');
+      const speedVal = document.getElementById('speed-val');
+      speedSlider.oninput = () => { speedVal.textContent = speedSlider.value + '%'; };
+
+      const btn = (id, action) => {
+        document.getElementById(id).addEventListener('mousedown', () => {
+          const i = getManualBot(); if (i < 0) return;
+          sendMove(i, action, getSpeed());
+        });
+        document.getElementById(id).addEventListener('mouseup', () => {
+          const i = getManualBot(); if (i < 0) return;
+          sendStop(i);
+        });
+      };
+      btn('btn-fwd', 'forward');
+      btn('btn-back', 'back');
+      btn('btn-left', 'left');
+      btn('btn-right', 'right');
+      document.getElementById('btn-stop').onclick = () => {
+        const i = getManualBot(); if (i >= 0) sendStop(i);
+      };
+
+      // Keyboard
+      const KEY_MAP = {
+        'ArrowUp': 'forward', 'w': 'forward',
+        'ArrowDown': 'back', 's': 'back',
+        'ArrowLeft': 'left', 'a': 'left',
+        'ArrowRight': 'right', 'd': 'right',
+      };
+      document.addEventListener('keydown', e => {
+        if (e.repeat) return;
+        const i = getManualBot(); if (i < 0) return;
+        if (KEY_MAP[e.key]) sendMove(i, KEY_MAP[e.key], getSpeed());
+        if (e.key === ' ') sendStop(i);
+      });
+      document.addEventListener('keyup', e => {
+        if (KEY_MAP[e.key]) {
+          const i = getManualBot(); if (i >= 0) sendStop(i);
+        }
+      });
+
+      // Stream URL selector
+      const streamSel = document.getElementById('stream-bot-select');
+      const streamBox = document.getElementById('stream-url-display');
+      function updateStreamUrl() {
+        const ip = ROBOTS[+streamSel.value].ip;
+        const url = `http://${ip}:${STREAM_PORT}/stream`;
+        streamBox.textContent = url;
+        streamBox.dataset.url = url;
+      }
+      streamSel.onchange = updateStreamUrl;
+      updateStreamUrl();
+    }
+
+    // ── Log ───────────────────────────────────────────────────────────────────────
+    function log(msg, type = '') {
+      const box = document.getElementById('log-box');
+      const cls = type === 'ok' ? 'log-ok' : type === 'warn' ? 'log-warn' :
+        type === 'target' ? 'log-target' : '';
+      const ts = new Date().toLocaleTimeString('en-GB', { hour12: false });
+      const line = document.createElement('div');
+      if (cls) line.className = cls;
+      line.textContent = `[${ts}] ${msg}`;
+      box.appendChild(line);
+      box.scrollTop = box.scrollHeight;
+      if (box.children.length > 120) box.removeChild(box.firstChild);
+    }
+
+    // ── PSO buttons (add to header) ───────────────────────────────────────────────
+    function addPsoButtons() {
+      const hdr = document.querySelector('header');
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'display:flex;gap:6px;margin-left:12px';
+      wrap.innerHTML = `
+    <button onclick="startPso()" style="background:rgba(29,158,117,0.15);border:1px solid rgba(29,158,117,0.4);color:#1D9E75;border-radius:4px;padding:4px 12px;cursor:pointer;font-family:inherit;font-size:11px;font-weight:700;letter-spacing:0.06em">▶ START PSO</button>
+    <button onclick="stopPso()"  style="background:rgba(226,75,74,0.12);border:1px solid rgba(226,75,74,0.3);color:#e24b4a;border-radius:4px;padding:4px 12px;cursor:pointer;font-family:inherit;font-size:11px;font-weight:700;letter-spacing:0.06em">■ STOP ALL</button>`;
+      document.querySelector('.header-badges').before(wrap);
+    }
+
+    // ── Init ──────────────────────────────────────────────────────────────────────
+    buildGrid();
+    buildRobotList();
+    wireControls();
+    addPsoButtons();
+    log('Dashboard initialised', 'ok');
+    log('Connecting to 4 robots…');
+
+    setInterval(pollAll, POLL_MS);
+    pollAll();
+  </script>
+</body>
+
+</html>
